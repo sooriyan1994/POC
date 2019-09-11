@@ -1,0 +1,237 @@
+DEBUT(PAR_LOT='NON')
+import os
+import sys
+
+input_file = open("input.txt",'r')
+input_data = input_file.read().splitlines()
+
+fiber_dia, density_f, conductivity_f, specific_heat_f, e11_f, e22_f, 
+e33_f, nu23_f, nu12_f, nu13_f, g23_f, g12_f, g13_f, alpha11_f, alpha22_f, alpha33_f, 
+density_m, conductivity_m, specific_heat_m, activation_energy_E_m, frequency_constant_A1_m, 
+Heat_of_Reaction_Hr_m, bulk_modulus_m, alpha_m, cure_shrinkage_m, youngs_modulus_e_m, 
+shear_modulus_m, poisons_ratio_m = [test_list[i] for i in range(len(input_data))] 
+
+print(bulk_modulus_m)
+
+from hexagonal_mesh_noise import *
+
+lx = a
+
+print(a)
+
+lx=0.007 #(RVE dimensions in mm)
+ly=0.01
+lz=0.01
+
+E = 8.854e13
+
+R = 8.3144598e9
+
+A1 = 3.62e11
+
+mat_den=0.0012
+mat_cp = 1.2e9*mat_den #voluminal cp
+Hr = 2.3e11*mat_den #voluminal heat generation
+
+fib_den=0.0018
+fib_cp=8.79e8*fib_den #voluminal cp
+
+
+
+mesh = LIRE_MAILLAGE(UNITE=20)
+
+model = AFFE_MODELE(
+    AFFE=_F(MODELISATION=('3D', ), PHENOMENE='THERMIQUE', TOUT='OUI'),
+    MAILLAGE=mesh,
+#for parallel
+#	DISTRIBUTION=_F(METHODE='SOUS_DOMAINE',PARTITIONNEUR='SCOTCH'),
+)
+
+fib_cond=DEFI_CONSTANTE(VALE=5.4e6)
+
+mat_en = DEFI_FONCTION(NOM_PARA='TEMP',NOM_RESU='CP',VALE=(0.0,0.0,
+                           1200.0,mat_cp*1200.0,
+                           ),PROL_DROITE='LINEAIRE',PROL_GAUCHE='LINEAIRE',);
+
+fib_en=DEFI_FONCTION(NOM_PARA='TEMP',NOM_RESU='FIB_CP',VALE=(0.0,0.0,
+                           1200.0,fib_cp*1200.0,
+                           ),PROL_DROITE='LINEAIRE',PROL_GAUCHE='LINEAIRE',);
+
+
+fib_mat = DEFI_MATERIAU(THER_NL=_F(LAMBDA=fib_cond, BETA=fib_en))
+
+mat_cond = DEFI_CONSTANTE(VALE=0.2e6)
+
+matrix = DEFI_MATERIAU(THER_NL=_F(LAMBDA=mat_cond, BETA=mat_en))
+
+Material = AFFE_MATERIAU(
+    AFFE=(
+        _F(GROUP_MA=('fiber', ), MATER=(fib_mat, )),
+        _F(GROUP_MA=('matrix', ), MATER=(matrix, ))
+    ),
+    MAILLAGE=mesh
+)
+
+#heating rate, cooling rate, hold_temp, hold_time
+T_room=295.
+T_add = T_room+lx #(unit temperature gradient) 
+
+
+h_lr = AFFE_CHAR_THER(
+    MODELE=model,
+    TEMP_IMPO=(_F(GROUP_MA=('right', ), TEMP=T_room),
+	       _F(GROUP_MA=('left', ), TEMP= T_room+ly),),
+)
+
+h_tb = AFFE_CHAR_THER(
+    MODELE=model,
+    TEMP_IMPO=(_F(GROUP_MA=('top', ), TEMP=T_room),
+	       _F(GROUP_MA=('bottom', ), TEMP=T_room+lz),),
+)
+
+h_fb = AFFE_CHAR_THER(
+    MODELE=model,
+    TEMP_IMPO=(_F(GROUP_MA=('front', ), TEMP=T_room),
+	       _F(GROUP_MA=('back', ), TEMP=T_room+lx),),
+)
+cyc = DEFI_LIST_REEL(
+    DEBUT=0.,
+    INTERVALLE=(
+        _F(JUSQU_A=1000., NOMBRE=100),
+    ),
+)
+
+cure_cyc=DEFI_LIST_INST(DEFI_LIST=_F(LIST_INST=cyc,),)
+
+ther1 = THER_NON_LINE(
+    MODELE=model,
+    CHAM_MATER=Material,
+    COMPORTEMENT=(
+        _F(GROUP_MA=('matrix', ), RELATION='THER_NL'),
+        _F(GROUP_MA=('fiber', ), RELATION='THER_NL')
+    ),
+    ETAT_INIT=_F(VALE=T_room),
+    EXCIT=_F(CHARGE=h_lr),
+    INCREMENT=_F(INST_FIN=1000., LIST_INST=cure_cyc),
+    CONVERGENCE=_F(ITER_GLOB_MAXI = 30,),
+    PARM_THETA = 0.57,
+    METHODE = 'NEWTON',
+#for sequential
+    SOLVEUR = _F (METHODE='GCPC',
+    		PRE_COND ='LDLT_INC',),
+#for parallel
+#    SOLVEUR = _F (METHODE='PETSC',
+#    		PRE_COND ='LDLT_SP',
+#           MATR_DISTRIBUEE='OUI',),
+    NEWTON = _F(
+    		REAC_ITER = 5, 
+    		ITER_LINE_MAXI = 3),
+)
+
+ther1 = CALC_CHAMP(
+    reuse = ther1,
+    RESULTAT = ther1,
+    MODELE=model,
+    CHAM_MATER=Material,
+    TOUT='OUI',
+#    GROUP_MA=('matrix',),
+    THERMIQUE = (
+    		'FLUX_ELNO',),
+)
+
+ther2 = THER_NON_LINE(
+    MODELE=model,
+    CHAM_MATER=Material,
+    COMPORTEMENT=(
+        _F(GROUP_MA=('matrix', ), RELATION='THER_NL'),
+        _F(GROUP_MA=('fiber', ), RELATION='THER_NL')
+    ),
+    ETAT_INIT=_F(VALE=T_room),
+    EXCIT=_F(CHARGE=h_fb),
+    INCREMENT=_F(INST_FIN=1000., LIST_INST=cure_cyc),
+    CONVERGENCE=_F(ITER_GLOB_MAXI = 30,),
+    PARM_THETA = 0.57,
+    METHODE = 'NEWTON',
+#for sequential
+    SOLVEUR = _F (METHODE='GCPC',
+    		PRE_COND ='LDLT_INC',),
+#for parallel
+#    SOLVEUR = _F (METHODE='PETSC',
+#    		PRE_COND ='LDLT_SP',
+#           MATR_DISTRIBUEE='OUI',),
+    NEWTON = _F(
+    		REAC_ITER = 5, 
+    		ITER_LINE_MAXI = 3),
+)
+
+ther2 = CALC_CHAMP(
+    reuse = ther2,
+    RESULTAT = ther2,
+    MODELE=model,
+    CHAM_MATER=Material,
+    TOUT='OUI',
+#    GROUP_MA=('matrix',),
+    THERMIQUE = (
+    		'FLUX_ELNO',),
+)
+#IMPR_RESU(
+#    UNITE=80,
+#    FORMAT = 'MED',
+#    RESU = (_F(RESULTAT=resther),)
+#    )
+
+#   homogenization of heat flow
+r_1 = POST_ELEM(
+		#CHAM_GD=m_f,
+		RESULTAT = ther1,
+		INST = 1000.,
+   		MODELE=model,
+		INTEGRALE=_F(
+			TOUT='OUI',
+		#	GROUP_MA=('matrix',),
+			TYPE_MAILLE='3D',
+			NOM_CHAM='FLUX_ELNO',
+			NOM_CMP=('FLUX','FLUY','FLUZ')),
+		)
+
+r_2 = POST_ELEM(
+		#CHAM_GD=m_f,
+		RESULTAT = ther2,
+		INST = 1000.,
+   		MODELE=model,
+		INTEGRALE=_F(
+			TOUT='OUI',
+		#	GROUP_MA=('matrix',),
+			TYPE_MAILLE='3D',
+			NOM_CHAM='FLUX_ELNO',
+			NOM_CMP=('FLUX','FLUY','FLUZ')),
+		)
+#print 'cond='
+#print r_1.EXTR_TABLE()
+#print r_2.EXTR_TABLE()
+
+#pre=open('/home/u1018292/Documents/dow_chemical/final/cond','w')
+#pre.write('kx=%.9e,ky=%.9e\n'%(r_2['MOYE_FLUX',1],r_1['MOYE_FLUY',1]))
+#pre.close()
+
+FIN()
+
+#NOM_CHAM         NUME_ORDRE   INST         VOL          TOUT             INTE_FLUX    INTE_FLUY    INTE_FLUZ    MOYE_FLUX    MOYE_FLUY    MOYE_FLUZ   
+#FLUX_ELGA                 100  1.00000E+03  7.00000E-07 TOUT             -1.94568E-04 -1.47263E+02 -3.62057E-04 -2.77955E+02 -2.10375E+08 -5.17224E+02
+#FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT             -3.23418E-04  1.47389E+02 -7.23733E-04 -4.62026E+02  2.10556E+08 -1.03390E+03
+
+
+#FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT             -1.95099E-04 -1.47389E+02 -3.62967E-04 -2.78713E+02 -2.10556E+08 -5.18524E+02
+#FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT             -2.81348E-04  2.94780E+01 -6.17015E-04 -4.01926E+02  4.21114E+07 -8.81450E+02
+#FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT             -2.66178E-04  1.76876E+00 -5.77236E-04 -3.80255E+02  2.52680E+06 -8.24622E+02
+#FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT             -2.65296E-04  2.94863E-01 -5.74909E-04 -3.78994E+02  4.21233E+05 -8.21299E+02
+FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT             -2.65296E-04  2.94863E-01 -5.74909E-04 -3.78994E+02  4.21233E+05 -8.21299E+02
+  
+FLUX_ELNO                 100  1.00000E+03  7.00000E-07 TOUT              1.52160E+00 -9.96536E-05 -4.40987E-04  2.17371E+06 -1.42362E+02 -6.29982E+02
+
+
+
+
+
+
+
